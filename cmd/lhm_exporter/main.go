@@ -55,7 +55,7 @@ var (
 
 func main() {
 	pflag.Usage = func() {
-		fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n")
+		fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n") //nolint:errcheck
 		pflag.PrintDefaults()
 	}
 
@@ -70,7 +70,7 @@ func main() {
 			fmt.Println("lhm_exporter version:", v, "buildTime:", buildTime, "gitCommit:", gitCommit)
 		}
 		if *showHelp {
-			fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n")
+			fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n") //nolint:errcheck
 			pflag.PrintDefaults()
 		}
 		return
