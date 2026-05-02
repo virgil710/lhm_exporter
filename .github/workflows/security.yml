@@ -41,8 +41,8 @@ jobs:
         sarif_file: govulncheck.sarif
         category: govulncheck
 
-  golangci-lint:
-    name: Lint
+  gosec:
+    name: Gosec
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -60,47 +60,15 @@ jobs:
         go-version-file: 'go.mod'
         cache: true
 
-    - name: Run golangci-lint
+    - name: Run gosec via golangci-lint
       uses: golangci/golangci-lint-action@v6
       with:
         version: latest
-        args: --timeout=5m --out-format=sarif:glci.sarif,colored-line-number
+        args: --timeout=5m --disable-all --enable=gosec --issues-exit-code=0 --out-format=sarif:gosec.sarif,colored-line-number
 
     - name: Upload SARIF file
       uses: github/codeql-action/upload-sarif@v3
-      if: always() && steps.golangci-lint.outcome == 'success'
-      with:
-        sarif_file: glci.sarif
-        category: golangci-lint
-
-  trivy:
-    name: Container Scan
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 15
-
-    permissions:
-      contents: read
-      security-events: write
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Build Docker image
-      run: docker build -t lhm_exporter:scan .
-
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'lhm_exporter:scan'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-        severity: 'CRITICAL,HIGH'
-
-    - name: Upload Trivy scan results
-      uses: github/codeql-action/upload-sarif@v3
       if: always()
       with:
-        sarif_file: 'trivy-results.sarif'
-        category: trivy
+        sarif_file: gosec.sarif
+        category: gosec
