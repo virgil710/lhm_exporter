@@ -28,12 +28,27 @@ build:
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
 		go build -v -ldflags="$(LDFLAGS)" -o $(BINARY)_linux_arm64_$(VERSION)_$(BUILD_TIME) $(MAIN_PKG)
 
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 \
+		go build -v -ldflags="$(LDFLAGS)" -o $(BINARY)_darwin_amd64_$(VERSION)_$(BUILD_TIME) $(MAIN_PKG)
+
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+		go build -v -ldflags="$(LDFLAGS)" -o $(BINARY)_darwin_arm64_$(VERSION)_$(BUILD_TIME) $(MAIN_PKG)
+
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
 		go build -v -ldflags="$(LDFLAGS)" -o $(BINARY)_windows_amd64_$(VERSION)_$(BUILD_TIME).exe $(MAIN_PKG)
 
 .PHONY: test
 test:
 	go test -v ./...
+
+.PHONY: compat-test
+compat-test:
+	go test -v -run "MinGoVersion|SlogCompatibility|AtomicCompatibility|StringsCutPrefix|MaxIntCompatibility|HardwareCatalogAll|SensorValueParsingAll|MetricNaming|PrometheusMetricGathering|JSONUnmarshalEdge|HardwareCatalogConcurrent|CollectorDescribeConsistency|CollectorCollectEmptyNode|ParseSensorValueGo123" -count=1 ./...
+
+.PHONY: test-cover
+test-cover:
+	go test -v -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
 
 .PHONY: lint
 lint:
@@ -47,3 +62,4 @@ lint:
 .PHONY: clean
 clean:
 	rm -f $(ROOT_DIR)/$(BINARY)_*
+	rm -f $(ROOT_DIR)/coverage.out

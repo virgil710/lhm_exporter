@@ -1,11 +1,15 @@
+// Package main implements the entry point for the LHM Exporter,
+// a Prometheus exporter for LibreHardwareMonitor hardware metrics.
 package main
 
 import (
 	"fmt"
 	"html/template"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"time"
 
 	"lhm_exporter/internal/collector"
@@ -17,59 +21,65 @@ import (
 	"github.com/spf13/pflag"
 )
 
+const (
+	defaultListenAddr    = "0.0.0.0"
+	defaultDestAddr      = "127.0.0.1"
+	defaultListenPort    = 18085
+	defaultDestPort      = 8085
+	defaultScrapeTimeout = 10 * time.Second
+	maxRequestsInFlight  = 2
+	maxHostnameLength    = 255
+
+	httpReadTimeout       = 10 * time.Second
+	httpWriteTimeout      = 30 * time.Second
+	httpReadHeaderTimeout = 5 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+)
+
 var (
 	buildTime string
 	gitCommit string
 	version   string
 
 	metricsPath            = pflag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-	listenAddress          = pflag.StringP("web.listen-address", "l", "0.0.0.0", "IP address or host to listen on for web interface and telemetry.")
-	listenPort             = pflag.UintP("web.listen-port", "p", 18085, "Port to listen on for web interface and telemetry.")
+	listenAddress          = pflag.StringP("web.listen-address", "l", defaultListenAddr, "IP address or host to listen on for web interface and telemetry.")
+	listenPort             = pflag.UintP("web.listen-port", "p", defaultListenPort, "Port to listen on for web interface and telemetry.")
 	disableExporterMetrics = pflag.Bool("web.disable-exporter-metrics", false, "Exclude metrics about the exporter itself (Go runtime and process metrics).")
 	showVersion            = pflag.BoolP("version", "v", false, "Show version information.")
-	destIP                 = pflag.String("dest.address", "127.0.0.1", "IP address of the monitored device.")
-	destPort               = pflag.Uint("dest.port", 8085, "Port of the monitored device.")
-	scrapeTimeout          = pflag.Duration("scrape.timeout", 10*time.Second, "Timeout for scraping LHM data.")
-
-	// legacyListen          = pflag.StringP("listen", "l", "", "Deprecated: use --web.listen-address.")
-	// legacyListenPort      = pflag.UintP("listen-port", "p", 0, "Deprecated: use --web.listen-address.")
-	// legacyDisableGoMetric = pflag.Bool("disable-go-metric", false, "Deprecated: use --web.disable-exporter-metrics.")
+	showHelp               = pflag.BoolP("help", "h", false, "Show help information.")
+	destIP                 = pflag.String("dest.address", defaultDestAddr, "IP address of the monitored device.")
+	destPort               = pflag.Uint("dest.port", defaultDestPort, "Port of the monitored device.")
+	scrapeTimeout          = pflag.Duration("scrape.timeout", defaultScrapeTimeout, "Timeout for scraping LHM data.")
+	debugMode              = pflag.Bool("debug", false, "Enable debug mode with verbose logging to stdout.")
 )
 
 func main() {
-	// mustMarkDeprecated("listen", "use --web.listen-address instead")
-	// mustMarkDeprecated("listen-port", "use --web.listen-address instead")
-	// mustMarkDeprecated("disable-go-metric", "use --web.disable-exporter-metrics instead")
+	pflag.Usage = func() {
+		fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n") //nolint:errcheck
+		pflag.PrintDefaults()
+	}
 
 	pflag.Parse()
 
-	if *showVersion {
-		v := version
-		if len(v) == 0 {
-			v = "dev"
+	if *showVersion || *showHelp {
+		if *showVersion {
+			v := version
+			if len(v) == 0 {
+				v = "dev"
+			}
+			fmt.Println("lhm_exporter version:", v, "buildTime:", buildTime, "gitCommit:", gitCommit)
 		}
-		fmt.Println("lhm_exporter version:", v, "buildTime:", buildTime, "gitCommit:", gitCommit)
+		if *showHelp {
+			fmt.Fprintf(os.Stdout, "Usage of lhm_exporter:\n") //nolint:errcheck
+			pflag.PrintDefaults()
+		}
 		return
 	}
 
-	logger := promslog.New(&promslog.Config{})
+	logger := setupLogger(*debugMode)
 
-	// Validate destination IP
-	if *destIP != "127.0.0.1" && *destIP != "localhost" {
-		if net.ParseIP(*destIP) == nil {
-			logger.Error("Target IP address is invalid", "ip", *destIP)
-			os.Exit(1)
-		}
-	}
-
-	// Validate destination port
-	if *destPort == 0 || *destPort > 65535 {
-		logger.Error("Destination port is invalid", "port", *destPort)
-		os.Exit(1)
-	}
-
-	if *listenPort == 0 || *listenPort > 65535 {
-		logger.Error("Listening port is invalid", "port", *listenPort)
+	if err := validateConfig(); err != nil {
+		logger.Error("configuration error", "err", err)
 		os.Exit(1)
 	}
 
@@ -87,15 +97,12 @@ func main() {
 	logger.Info("Starting lhm_exporter", "version", v, "destIP", *destIP, "destPort", *destPort, "scrapeTimeout", *scrapeTimeout)
 
 	client := collector.NewLHMClient(*destIP, *destPort, *scrapeTimeout)
+	defer client.Close()
 
-	// Create a custom registry to avoid polluting the default global metrics
 	reg := prometheus.NewRegistry()
-
-	// Register the LHM collector
 	lhmCollector := collector.NewLHMCollector(client, logger)
 	reg.MustRegister(lhmCollector)
 
-	// Register Go runtime and process collectors
 	if !*disableExporterMetrics {
 		reg.MustRegister(
 			collectors.NewGoCollector(),
@@ -103,14 +110,83 @@ func main() {
 		)
 	}
 
-	// Set up HTTP handlers
+	handler := buildHandler(reg, v, logger)
+
+	logger.Info("Listening on", "address", listenAddr)
+	server := &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+	if err := server.ListenAndServe(); err != nil {
+		logger.Error("HTTP server failed", "err", err)
+		os.Exit(1)
+	}
+}
+
+func setupLogger(debugMode bool) *slog.Logger {
+	logLevel := promslog.NewLevel()
+	if debugMode {
+		if err := logLevel.Set("debug"); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to set log level: %v\n", err)
+		}
+	} else {
+		if err := logLevel.Set("info"); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to set log level: %v\n", err)
+		}
+	}
+	return promslog.New(&promslog.Config{
+		Level:  logLevel,
+		Format: promslog.NewFormat(),
+	})
+}
+
+func validateConfig() error {
+	if err := validateDestAddress(*destIP); err != nil {
+		return fmt.Errorf("dest.address: %w", err)
+	}
+	if err := validatePort(*destPort, "dest.port"); err != nil {
+		return err
+	}
+	if err := validatePort(*listenPort, "web.listen-port"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateDestAddress(addr string) error {
+	if addr == "localhost" || addr == "127.0.0.1" || addr == "::1" {
+		return nil
+	}
+	if net.ParseIP(addr) != nil {
+		return nil
+	}
+	return fmt.Errorf("invalid IP address: %s", addr)
+}
+
+func validatePort(port uint, name string) error {
+	if port == 0 || port > 65535 {
+		return fmt.Errorf("%s is invalid: %d (must be 1-65535)", name, port)
+	}
+	return nil
+}
+
+func buildHandler(reg *prometheus.Registry, version string, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(*metricsPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{
-		MaxRequestsInFlight: 2,
+
+	cleanPath := path.Clean(*metricsPath)
+	if cleanPath == "" {
+		cleanPath = "/metrics"
+	}
+
+	mux.Handle(cleanPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{
+		MaxRequestsInFlight: maxRequestsInFlight,
 	}))
 
-	// Landing page
-	if *metricsPath != "/" {
+	if cleanPath != "/" {
 		landingTmpl := template.Must(template.New("landing").Parse(`<!DOCTYPE html>
 <html>
 <head><title>LHM Exporter</title></head>
@@ -131,20 +207,37 @@ func main() {
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_ = landingTmpl.Execute(w, map[string]string{
-				"Version":     v,
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			if err := landingTmpl.Execute(w, map[string]string{
+				"Version":     version,
 				"GitCommit":   gitCommit,
 				"BuildTime":   buildTime,
 				"MetricsPath": *metricsPath,
-			})
+			}); err != nil {
+				logger.Error("failed to render landing page", "err", err)
+			}
 		})
 	}
 
-	logger.Info("Listening on", "address", listenAddr)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
-		logger.Error("HTTP server failed", "err", err)
-		os.Exit(1)
+	var handler http.Handler = mux
+	if *debugMode {
+		handler = requestLoggingMiddleware(logger, mux)
 	}
+	return handler
+}
+
+// requestLoggingMiddleware wraps an http.Handler and logs each incoming
+// request's remote IP and path when debug mode is enabled.
+func requestLoggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			clientIP = r.RemoteAddr
+		}
+		logger.Debug("HTTP request", "remote_ip", clientIP, "method", r.Method, "path", r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func normalizeListenHost(raw string) (string, error) {
@@ -160,14 +253,8 @@ func normalizeListenHost(raw string) (string, error) {
 	if ip := net.ParseIP(raw); ip != nil {
 		return raw, nil
 	}
-	if len(raw) > 255 {
+	if len(raw) > maxHostnameLength {
 		return "", fmt.Errorf("host is too long")
 	}
 	return raw, nil
-}
-
-func mustMarkDeprecated(name, message string) {
-	if err := pflag.CommandLine.MarkDeprecated(name, message); err != nil {
-		panic(err)
-	}
 }

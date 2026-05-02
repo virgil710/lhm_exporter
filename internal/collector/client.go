@@ -3,8 +3,18 @@ package collector
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"time"
+)
+
+const (
+	defaultTimeout         = 10 * time.Second
+	maxResponseSize        = 10 * 1024 * 1024 // 10 MB
+	maxIdleConns           = 10
+	maxIdleConnsPerHost    = 5
+	defaultIdleConnTimeout = 90 * time.Second
 )
 
 // LHMClient fetches hardware monitoring data from a LibreHardwareMonitor
@@ -19,24 +29,54 @@ type LHMClient struct {
 func NewLHMClient(destIP string, destPort uint, timeout time.Duration) *LHMClient {
 	url := fmt.Sprintf("http://%s:%d/data.json", destIP, destPort)
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultTimeout
 	}
+
+	transport := defaultHTTPTransport()
+	transport.MaxIdleConns = maxIdleConns
+	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	transport.IdleConnTimeout = defaultIdleConnTimeout
 
 	return &LHMClient{
 		url: url,
 		httpClient: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				MaxIdleConnsPerHost: 5,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: transport,
 		},
 	}
 }
 
+func defaultHTTPTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		return transport.Clone()
+	}
+
+	return (&http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}).Clone()
+}
+
+// URL returns the target endpoint URL being accessed.
+func (c *LHMClient) URL() string {
+	return c.url
+}
+
+// Close releases any resources held by the client.
+func (c *LHMClient) Close() {
+	c.httpClient.CloseIdleConnections()
+}
+
 // Fetch retrieves and decodes the LHM data from the remote endpoint.
-// It uses streaming JSON decoding to minimize memory allocation.
+// It uses streaming JSON decoding with a size limit to prevent memory exhaustion.
 func (c *LHMClient) Fetch() (*Node, error) {
 	if c.fetchFn != nil {
 		return c.fetchFn()
@@ -46,14 +86,15 @@ func (c *LHMClient) Fetch() (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching LHM data from %s: %w", c.url, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("LHM returned HTTP %d from %s", resp.StatusCode, c.url)
 	}
 
 	var node Node
-	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxResponseSize)
+	if err := json.NewDecoder(limitedBody).Decode(&node); err != nil {
 		return nil, fmt.Errorf("decoding LHM data: %w", err)
 	}
 

@@ -1,3 +1,5 @@
+// Package collector implements a Prometheus collector for LibreHardwareMonitor
+// hardware metrics.
 package collector
 
 import (
@@ -11,6 +13,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	namespace            = "lhm"
+	maxRequestsInFlight  = 2
+	maxHostnameLength    = 255
+	defaultListenPort    = 18085
+	defaultDestPort      = 8085
+)
+
 func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
@@ -18,10 +28,6 @@ func newDiscardLogger() *slog.Logger {
 type discardWriter struct{}
 
 func (d *discardWriter) Write(p []byte) (int, error) { return len(p), nil }
-
-const (
-	namespace = "lhm"
-)
 
 var labelNames = []string{"device", "device_model", "sensor_pos"}
 
@@ -153,25 +159,62 @@ func (c *LHMCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scrapeSamples
 }
 
+// emitScrapeMetrics sends the four scrape-level metrics to the channel.
+// All metrics are created first; if any creation fails, none are emitted
+// and all errors are logged to avoid partial metric exposure.
+func (c *LHMCollector) emitScrapeMetrics(ch chan<- prometheus.Metric, up float64, duration float64, samples int) {
+	type metricSpec struct {
+		desc  *prometheus.Desc
+		vtype prometheus.ValueType
+		value float64
+		name  string
+	}
+
+	specs := []metricSpec{
+		{c.up, prometheus.GaugeValue, up, "lhm_up"},
+		{c.scrapeDuration, prometheus.GaugeValue, duration, "lhm_scrape_duration_seconds"},
+		{c.scrapeErrors, prometheus.CounterValue, float64(atomic.LoadUint64(&c.errorCount)), "lhm_scrape_errors_total"},
+		{c.scrapeSamples, prometheus.GaugeValue, float64(samples), "lhm_scrape_samples_total"},
+	}
+
+	metrics := make([]prometheus.Metric, 0, len(specs))
+	var hasErr bool
+
+	for _, s := range specs {
+		m, err := prometheus.NewConstMetric(s.desc, s.vtype, s.value)
+		if err != nil {
+			c.logger.Error("failed to create metric", "metric", s.name, "err", err)
+			hasErr = true
+			continue
+		}
+		metrics = append(metrics, m)
+	}
+
+	if hasErr {
+		return
+	}
+
+	for _, m := range metrics {
+		ch <- m
+	}
+}
+
 // Collect fetches data from LHM and sends all metrics to the channel.
 func (c *LHMCollector) Collect(ch chan<- prometheus.Metric) {
 	start := time.Now()
 	samples := 0
 
+	c.logger.Debug("fetching LHM data", "url", c.client.URL())
 	node, err := c.client.Fetch()
 	if err != nil {
 		c.logger.Error("failed to fetch LHM data", "err", err)
 		atomic.AddUint64(&c.errorCount, 1)
-		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, 0)
-		ch <- prometheus.MustNewConstMetric(c.scrapeDuration, prometheus.GaugeValue, time.Since(start).Seconds())
-		ch <- prometheus.MustNewConstMetric(c.scrapeErrors, prometheus.CounterValue, float64(atomic.LoadUint64(&c.errorCount)))
-		ch <- prometheus.MustNewConstMetric(c.scrapeSamples, prometheus.GaugeValue, 0)
+		c.emitScrapeMetrics(ch, 0, time.Since(start).Seconds(), 0)
 		return
 	}
 
 	exposer := NodeToExposer(node)
 
-	// Collect metrics for each hardware type
 	samples += c.collectHardware(ch, "cpu", exposer.CPU, "cpu")
 	samples += c.collectHardware(ch, "motherboard", exposer.Board, "board")
 	samples += c.collectHardware(ch, "ram", exposer.Ram, "ram")
@@ -181,10 +224,7 @@ func (c *LHMCollector) Collect(ch chan<- prometheus.Metric) {
 	samples += c.collectHardware(ch, "disk", exposer.Disk, "disk")
 	samples += c.collectHardware(ch, "net", exposer.Net, "net")
 
-	ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, 1)
-	ch <- prometheus.MustNewConstMetric(c.scrapeDuration, prometheus.GaugeValue, time.Since(start).Seconds())
-	ch <- prometheus.MustNewConstMetric(c.scrapeErrors, prometheus.CounterValue, float64(atomic.LoadUint64(&c.errorCount)))
-	ch <- prometheus.MustNewConstMetric(c.scrapeSamples, prometheus.GaugeValue, float64(samples))
+	c.emitScrapeMetrics(ch, 1, time.Since(start).Seconds(), samples)
 
 	c.logger.Debug("collected LHM metrics", "duration", time.Since(start))
 }
@@ -207,9 +247,18 @@ func (c *LHMCollector) collectHardware(ch chan<- prometheus.Metric, hwType strin
 			}
 			sensorLabels := make(map[string]int, len(sensors))
 			for _, s := range sensors {
-				value := parseSensorValue(s.Value)
+				value, err := parseSensorValue(s.Value)
+				if err != nil {
+					c.logger.Debug("failed to parse sensor value", "value", s.Value, "err", err)
+					continue
+				}
 				sensorLabel := uniqueSensorLabel(sensorLabels, s.Text)
-				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, deviceLabel, device.DeviceModel, sensorLabel)
+				metric, err := prometheus.NewConstMetric(desc, prometheus.GaugeValue, value, deviceLabel, device.DeviceModel, sensorLabel)
+				if err != nil {
+					c.logger.Error("failed to create metric", "metric", m.name, "err", err)
+					continue
+				}
+				ch <- metric
 				samples++
 			}
 		}
@@ -262,15 +311,14 @@ func getSensorsByField(hd *HardwareDevice, field string) []*ENode {
 }
 
 // parseSensorValue extracts the numeric value from a sensor string like "50.0 °C".
-// Returns -1 if parsing fails.
-func parseSensorValue(s string) float64 {
+func parseSensorValue(s string) (float64, error) {
 	if s == "" {
-		return -1
+		return 0, fmt.Errorf("empty sensor value")
 	}
 	v := strings.SplitN(s, " ", 2)[0]
 	f, err := strconv.ParseFloat(v, 64)
 	if err != nil {
-		return -1
+		return 0, fmt.Errorf("invalid sensor value %q: %w", s, err)
 	}
-	return f
+	return f, nil
 }

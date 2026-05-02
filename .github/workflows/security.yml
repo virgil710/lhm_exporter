@@ -1,0 +1,79 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  govulncheck:
+    name: Vulnerability Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        cache: true
+
+    - name: Install govulncheck
+      run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+    - name: Run govulncheck
+      run: govulncheck -format sarif ./... > govulncheck.sarif || true
+
+    - name: Deduplicate SARIF rule tags
+      run: |
+        jq '.runs |= map(.tool.driver.rules |= map(if (.properties.tags? | type) == "array" then .properties.tags |= unique else . end))' govulncheck.sarif > govulncheck.deduped.sarif
+        mv govulncheck.deduped.sarif govulncheck.sarif
+
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: govulncheck.sarif
+        category: govulncheck
+
+  gosec:
+    name: Gosec
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        cache: true
+
+    - name: Run gosec via golangci-lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: latest
+        args: --timeout=5m --disable-all --enable=gosec --issues-exit-code=0 --out-format=sarif:gosec.sarif,colored-line-number
+
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: gosec.sarif
+        category: gosec
