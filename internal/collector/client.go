@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
 
 const (
-	defaultTimeout        = 10 * time.Second
-	maxResponseSize       = 10 * 1024 * 1024 // 10 MB
-	maxIdleConns          = 10
-	maxIdleConnsPerHost   = 5
+	defaultTimeout         = 10 * time.Second
+	maxResponseSize        = 10 * 1024 * 1024 // 10 MB
+	maxIdleConns           = 10
+	maxIdleConnsPerHost    = 5
 	defaultIdleConnTimeout = 90 * time.Second
 )
 
@@ -31,7 +32,7 @@ func NewLHMClient(destIP string, destPort uint, timeout time.Duration) *LHMClien
 		timeout = defaultTimeout
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := defaultHTTPTransport()
 	transport.MaxIdleConns = maxIdleConns
 	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
 	transport.IdleConnTimeout = defaultIdleConnTimeout
@@ -43,6 +44,25 @@ func NewLHMClient(destIP string, destPort uint, timeout time.Duration) *LHMClien
 			Transport: transport,
 		},
 	}
+}
+
+func defaultHTTPTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		return transport.Clone()
+	}
+
+	return (&http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}).Clone()
 }
 
 // URL returns the target endpoint URL being accessed.
