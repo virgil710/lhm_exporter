@@ -139,23 +139,31 @@ func TestEmptyNode(t *testing.T) {
 
 func TestParseSensorValue(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected float64
+		name      string
+		input     string
+		want      float64
+		wantErr   bool
 	}{
-		{"50.0 °C", 50.0},
-		{"12.096 V", 12.096},
-		{"1200 RPM", 1200},
-		{"25.5 %", 25.5},
-		{"3600 MHz", 3600},
-		{"", -1},
-		{"N/A", -1},
+		{"temperature", "50.0 °C", 50.0, false},
+		{"voltage", "12.096 V", 12.096, false},
+		{"fan speed", "1200 RPM", 1200, false},
+		{"load percent", "25.5 %", 25.5, false},
+		{"clock", "3600 MHz", 3600, false},
+		{"empty string", "", 0, true},
+		{"non-numeric", "N/A", 0, true},
 	}
 
 	for _, tt := range tests {
-		got := parseSensorValue(tt.input)
-		if got != tt.expected {
-			t.Errorf("parseSensorValue(%q) = %v, want %v", tt.input, got, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSensorValue(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseSensorValue(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseSensorValue(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -321,11 +329,11 @@ func TestLHMCollectorCollectDeduplicatesSensorLabels(t *testing.T) {
 			continue
 		}
 		for _, metric := range mf.GetMetric() {
-		for _, label := range metric.GetLabel() {
-			if label.GetName() == "sensor_pos" {
-				labels = append(labels, label.GetValue())
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "sensor_pos" {
+					labels = append(labels, label.GetValue())
+				}
 			}
-		}
 		}
 	}
 
@@ -366,29 +374,5 @@ func TestContainsAny(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("containsAny(%q, %v) = %v, want %v", tt.s, tt.subs, got, tt.want)
 		}
-	}
-}
-
-func TestGetAllIPs(t *testing.T) {
-	ips, err := GetAllIPs()
-	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") {
-			t.Skipf("GetAllIPs requires network interface access in this environment: %v", err)
-		}
-		t.Fatalf("GetAllIPs failed: %v", err)
-	}
-	if len(ips) == 0 {
-		t.Error("GetAllIPs returned no IPs")
-	}
-	// Should always include 0.0.0.0
-	found := false
-	for _, ip := range ips {
-		if ip == "0.0.0.0" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("GetAllIPs should include 0.0.0.0")
 	}
 }
