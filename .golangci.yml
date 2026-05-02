@@ -14,7 +14,7 @@ linters:
     - durationcheck
     - errname
     - errorlint
-    - exportloopref
+    - copyloopvar
     - forcetypeassert
     - gosec
     - misspell
