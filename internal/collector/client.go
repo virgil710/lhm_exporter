@@ -3,8 +3,17 @@ package collector
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
+)
+
+const (
+	defaultTimeout        = 10 * time.Second
+	maxResponseSize       = 10 * 1024 * 1024 // 10 MB
+	maxIdleConns          = 10
+	maxIdleConnsPerHost   = 5
+	defaultIdleConnTimeout = 90 * time.Second
 )
 
 // LHMClient fetches hardware monitoring data from a LibreHardwareMonitor
@@ -19,24 +28,35 @@ type LHMClient struct {
 func NewLHMClient(destIP string, destPort uint, timeout time.Duration) *LHMClient {
 	url := fmt.Sprintf("http://%s:%d/data.json", destIP, destPort)
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultTimeout
 	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = maxIdleConns
+	transport.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	transport.IdleConnTimeout = defaultIdleConnTimeout
 
 	return &LHMClient{
 		url: url,
 		httpClient: &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				MaxIdleConnsPerHost: 5,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: transport,
 		},
 	}
 }
 
+// URL returns the target endpoint URL being accessed.
+func (c *LHMClient) URL() string {
+	return c.url
+}
+
+// Close releases any resources held by the client.
+func (c *LHMClient) Close() {
+	c.httpClient.CloseIdleConnections()
+}
+
 // Fetch retrieves and decodes the LHM data from the remote endpoint.
-// It uses streaming JSON decoding to minimize memory allocation.
+// It uses streaming JSON decoding with a size limit to prevent memory exhaustion.
 func (c *LHMClient) Fetch() (*Node, error) {
 	if c.fetchFn != nil {
 		return c.fetchFn()
@@ -53,7 +73,8 @@ func (c *LHMClient) Fetch() (*Node, error) {
 	}
 
 	var node Node
-	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+	limitedBody := io.LimitReader(resp.Body, maxResponseSize)
+	if err := json.NewDecoder(limitedBody).Decode(&node); err != nil {
 		return nil, fmt.Errorf("decoding LHM data: %w", err)
 	}
 
