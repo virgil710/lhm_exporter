@@ -86,7 +86,7 @@ func (c *LHMClient) Fetch() (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching LHM data from %s: %w", c.url, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("LHM returned HTTP %d from %s", resp.StatusCode, c.url)
