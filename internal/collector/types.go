@@ -89,7 +89,7 @@ func collectSensors(node *ENode, hd *HardwareDevice, depth int) {
 			hd.Fan = append(hd.Fan, child.Children...)
 		case "Controls":
 			hd.Control = append(hd.Control, child.Children...)
-		case "Power":
+		case "Powers":
 			hd.Power = append(hd.Power, child.Children...)
 		case "Clocks":
 			hd.Clock = append(hd.Clock, child.Children...)
@@ -97,13 +97,13 @@ func collectSensors(node *ENode, hd *HardwareDevice, depth int) {
 			hd.Load = append(hd.Load, child.Children...)
 		case "Data":
 			hd.Data = append(hd.Data, child.Children...)
-		case "Timing":
+		case "Timings":
 			hd.Timing = append(hd.Timing, child.Children...)
 		case "Throughput":
 			hd.Throughput = append(hd.Throughput, child.Children...)
 		case "Level":
 			hd.Level = append(hd.Level, child.Children...)
-		case "Factor":
+		case "Factors":
 			hd.Factor = append(hd.Factor, child.Children...)
 		default:
 			collectSensors(child, hd, depth+1)

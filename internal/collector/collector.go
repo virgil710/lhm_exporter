@@ -46,6 +46,7 @@ var hardwareMetrics = map[string][]metricDef{
 		{sensorField: "Power", name: "lhm_cpu_power_watts", help: "CPU power in watts, from LibreHardwareMonitor"},
 		{sensorField: "Clock", name: "lhm_cpu_clock_hertz", help: "CPU clock frequency in hertz, from LibreHardwareMonitor"},
 		{sensorField: "Load", name: "lhm_cpu_load_percent", help: "CPU load in percent, from LibreHardwareMonitor"},
+		{sensorField: "Factor", name: "lhm_cpu_multiplier", help: "CPU multiplier, from LibreHardwareMonitor"},
 	},
 	"motherboard": {
 		{sensorField: "Temp", name: "lhm_motherboard_temperature_celsius", help: "Motherboard temperature in celsius, from LibreHardwareMonitor"},
@@ -73,6 +74,7 @@ var hardwareMetrics = map[string][]metricDef{
 		{sensorField: "Load", name: "lhm_gpu_load_percent", help: "GPU load in percent, from LibreHardwareMonitor"},
 		{sensorField: "Fan", name: "lhm_gpu_fan_speed_rpm", help: "GPU fan speed in RPM, from LibreHardwareMonitor"},
 		{sensorField: "Control", name: "lhm_gpu_control_percent", help: "GPU control in percent, from LibreHardwareMonitor"},
+		{sensorField: "Factor", name: "lhm_gpu_fullscreen_fps", help: "GPU fullscreen FPS, from LibreHardwareMonitor"},
 		{sensorField: "Data", name: "lhm_gpu_data_bytes", help: "GPU data in bytes, from LibreHardwareMonitor"},
 		{sensorField: "Throughput", name: "lhm_gpu_throughput_bytes_per_second", help: "GPU throughput in bytes per second, from LibreHardwareMonitor"},
 	},
