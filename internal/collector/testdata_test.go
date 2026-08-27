@@ -118,7 +118,7 @@ const testSampleJSON = `{
             },
             {
               "id": 18,
-              "Text": "Power",
+              "Text": "Powers",
               "Min": "",
               "Value": "",
               "Max": "",
